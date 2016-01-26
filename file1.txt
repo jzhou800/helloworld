@@ -1,1 +1,2 @@
 line 1, created before init
+add a line after the first commit
