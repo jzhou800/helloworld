@@ -1,0 +1,835 @@
+IF EXISTS (SELECT name FROM sys.schemas WHERE name = N'statspack')
+	BEGIN
+		PRINT 'Dropping the DB schema'
+		DROP SCHEMA statspack
+END
+GO
+CREATE SCHEMA statspack
+GO
+
+IF OBJECT_ID('statspack.job_schedules') IS NOT NULL
+DROP TABLE statspack.job_schedules;
+GO
+CREATE TABLE statspack.job_schedules (
+  jobname nvarchar(30),
+  interval int,
+  last_run_at DATETIME DEFAULT GETUTCDATE(),
+  run_order smallint,
+  last_snapshot_id int,
+  is_enabled smallint,
+  in_adhoc smallint
+);
+GO
+INSERT INTO statspack.job_schedules(jobname, interval, last_run_at, run_order, last_snapshot_id, is_enabled, in_adhoc) VALUES('snap_sessions', 1, NULL, 10, 100, 1, 1); -- 1 minute
+INSERT INTO statspack.job_schedules(jobname, interval, last_run_at, run_order, last_snapshot_id, is_enabled, in_adhoc) VALUES('snap_plan_cache', 720, NULL, 1000, 100, 1, 0);  -- 12 hours
+INSERT INTO statspack.job_schedules(jobname, interval, last_run_at, run_order, last_snapshot_id, is_enabled, in_adhoc) VALUES('snap_kpi', 15, NULL, 20, 100, 0, 0);   -- 15 minutes
+INSERT INTO statspack.job_schedules(jobname, interval, last_run_at, run_order, last_snapshot_id, is_enabled, in_adhoc) VALUES('snap_io_stats', 15, NULL, 30, 100, 1, 1);   -- 15 minutes
+INSERT INTO statspack.job_schedules(jobname, interval, last_run_at, run_order, last_snapshot_id, is_enabled, in_adhoc) VALUES('snap_waits', 15, NULL, 40, 100, 1, 1);   -- 15 minutes
+GO 
+
+IF OBJECT_ID('statspack.snapshots') IS NOT NULL
+DROP TABLE statspack.snapshots;
+GO
+CREATE TABLE statspack.snapshots (
+  id INT IDENTITY(100, 1) NOT NULL,
+  starttime DATETIME,
+  endtime DATETIME,
+  is_adhoc_snapshot smallint
+);
+GO
+INSERT INTO statspack.snapshots(starttime, endtime, is_adhoc_snapshot) VALUES(NULL, NULL, 0);
+GO
+
+IF OBJECT_ID('statspack.io_stats') IS NOT NULL
+DROP TABLE statspack.io_stats;
+GO
+CREATE TABLE statspack.io_stats(
+  id bigint identity(1, 1) NOT NULL,
+  snapshot_id int NOT NULL,
+  snap_at DATETIME,
+	[ReadLatency] [BIGINT] NULL,
+	[WriteLatency] [BIGINT] NULL,
+	[Latency] [BIGINT] NULL,
+	[AvgBPerRead] [BIGINT] NULL,
+	[AvgBPerWrite] [BIGINT] NULL,
+	[AvgBPerTransfer] [BIGINT] NULL,
+	[Drive] [NVARCHAR](2) NULL,
+	[DB] [NVARCHAR](128) NULL,
+	[database_id] [SMALLINT] NOT NULL,
+	[file_id] [SMALLINT] NOT NULL,
+	[sample_ms] [INT] NOT NULL,
+	[num_of_reads] [BIGINT] NOT NULL,
+	[num_of_bytes_read] [BIGINT] NOT NULL,
+	[io_stall_read_ms] [BIGINT] NOT NULL,
+	[num_of_writes] [BIGINT] NOT NULL,
+	[num_of_bytes_written] [BIGINT] NOT NULL,
+	[io_stall_write_ms] [BIGINT] NOT NULL,
+	[io_stall] [BIGINT] NOT NULL,
+	[size_on_disk_MB] [NUMERIC](25, 6) NULL,
+	[file_handle] [VARBINARY](8) NOT NULL,
+	[physical_name] [NVARCHAR](260) NOT NULL
+)
+GO
+
+IF OBJECT_ID('statspack.wait_stats') IS NOT NULL
+DROP TABLE statspack.wait_stats
+GO
+CREATE TABLE statspack.wait_stats (
+  id bigint identity(1, 1) NOT NULL,
+  snapshot_id int NOT NULL,
+  snap_at DATETIME,
+  wait_type nvarchar(60),
+  waiting_tasks_count bigint,
+  wait_time_ms bigint,
+  max_wait_time_ms bigint,
+  signal_wait_time_ms bigint
+)
+GO
+
+IF OBJECT_ID('statspack.job_active_session') IS NOT NULL
+DROP TABLE statspack.active_sessions;
+GO
+CREATE TABLE statspack.active_sessions (
+  id bigint identity(1, 1) NOT NULL,
+  snapshot_id int NOT NULL,
+  snap_at DATETIME,
+  snapshot_level smallint,
+  session_id smallint,
+  session_status nvarchar(30),
+  request_status nvarchar(30),
+  blocking_session_id smallint,
+  database_name nvarchar(60),
+  wait_type nvarchar(60),
+  wait_time int,
+  last_wait_type nvarchar(60),
+  wait_resource nvarchar(256),
+  request_reads bigint,
+  request_writes bigint,
+  request_logical_reads bigint,
+  request_cpu_time bigint,
+  login_name nvarchar(120),
+  host_name nvarchar(60),
+  command nvarchar(32),
+  program_name nvarchar(128),
+  transaction_isolation_level nvarchar(30),
+  sql_handle varbinary(64),
+  most_recent_sql_handle varbinary(64),
+  plan_handle varbinary(64),
+  executing_statement nvarchar(max),
+  complete_statement nvarchar(max),
+  query_plan xml
+)
+GO
+
+IF OBJECT_ID('statspack.plan_cache') IS NOT NULL
+DROP TABLE statspack.plan_cache;
+GO
+
+CREATE TABLE statspack.plan_cache(
+  id bigint identity(1, 1) NOT NULL,
+  snapshot_id int NOT NULL,
+  snap_at DATETIME,
+  snapshot_level smallint,
+  database_name nvarchar(60),
+  sql_handle varbinary(64),
+  plan_handle varbinary(64),
+  query_hash binary(8),
+  query_plan_hash binary(8),
+  statement_start_offset int,
+  statement_end_offset int,
+  usecounts bigint,
+  plan_size_in_bytes bigint,
+  plan_generation_num bigint,
+  creation_time datetime,
+  last_execution_time datetime,
+  execution_count bigint,
+  total_worker_time bigint,
+  total_logical_reads bigint,
+  total_physical_reads bigint,
+  total_logical_writes bigint,
+  total_elasped_time bigint,
+  total_rows bigint,
+  total_dop bigint,
+  total_grant_kb bigint,
+  total_used_grant_kb bigint,
+  total_ideal_grant_kb bigint,
+  sql_text nvarchar(max),
+  query_plan xml
+)
+GO
+
+IF OBJECT_ID('statspack.kpi') IS NOT NULL
+DROP TABLE statspack.kpi;
+GO
+CREATE TABLE statspack.kpi(
+  id bigint identity(1, 1) NOT NULL,
+  snapshot_id int NOT NULL,
+  snap_at DATETIME,
+  database_name nvarchar(30),
+  total_executions bigint,
+  responsetime_sec bigint,
+  total_transactions bigint,
+  num_plans bigint
+)
+GO
+
+IF OBJECT_ID('statspack.snap_sessions') IS NOT NULL
+DROP PROCEDURE statspack.snap_sessions
+GO
+CREATE PROCEDURE statspack.snap_sessions @snapshot_id INT
+AS  
+  INSERT INTO active_sessions(
+  snapshot_id,
+  snap_at,
+  snapshot_level ,
+  session_id ,
+  session_status ,
+  request_status ,
+  blocking_session_id ,
+  database_name ,
+  wait_type ,
+  wait_time ,
+  last_wait_type ,
+  wait_resource ,
+  request_reads ,
+  request_writes ,
+  request_logical_reads ,
+  request_cpu_time ,
+  login_name ,
+  host_name ,
+  command ,
+  program_name ,
+  transaction_isolation_level ,
+  sql_handle ,
+  most_recent_sql_handle ,
+  plan_handle ,
+  executing_statement ,
+  complete_statement ,
+  query_plan)
+  SELECT  @snapshot_id, getutcdate(), 0,
+        des.session_id ,
+        des.status AS session_status, /* Sleeping: A session without any requests. Running: A session with unfinished requests. But a request could be blocked, aka, Suspended */ 
+		der.status AS request_status, /* Running, Runnable, Sleeping, Suspended */ 
+        der.blocking_session_id ,
+        DB_NAME(der.database_id) AS database_name ,
+        der.wait_type ,
+        der.wait_time ,
+        der.last_wait_type ,
+        der.wait_resource ,
+		der.reads AS request_reads,
+		der.writes AS request_writes,
+		der.logical_reads AS request_logical_reads,
+		der.cpu_time AS request_cpu_time,
+		des.login_name ,
+        des.[HOST_NAME] ,
+		der.command ,
+		des.[program_name] ,
+        CASE des.transaction_isolation_level
+          WHEN 0 THEN 'Unspecified'
+          WHEN 1 THEN 'ReadUncommitted'
+          WHEN 2 THEN 'ReadCommitted'
+          WHEN 3 THEN 'Repeatable'
+          WHEN 4 THEN 'Serializable'
+          WHEN 5 THEN 'Snapshot'
+        END AS transaction_isolation_level ,
+        der.sql_handle,
+        dec.most_recent_sql_handle,
+        der.plan_handle,
+        SUBSTRING(dest.text, der.statement_start_offset / 2,
+                  ( CASE WHEN der.statement_end_offset = -1
+                         THEN DATALENGTH(dest.text)
+                         ELSE der.statement_end_offset
+                    END - der.statement_start_offset ) / 2)
+                                          AS [executing_statement] ,
+
+		dest.text AS complete_statement,
+		deqp.query_plan
+FROM    sys.dm_exec_sessions des
+        LEFT JOIN sys.dm_exec_requests der
+                      ON des.session_id = der.session_id
+        LEFT JOIN sys.dm_exec_connections dec
+                      ON des.session_id = dec.session_id
+        OUTER APPLY sys.dm_exec_sql_text(ISNULL(der.sql_handle, dec.most_recent_sql_handle)) dest
+        OUTER APPLY sys.dm_exec_query_plan(der.plan_handle) deqp
+WHERE   des.is_user_process = 1
+  AND des.session_id <> @@SPID
+  AND des.status = 'running'
+GO
+
+IF OBJECT_ID('statspack.snap_plan_cache') IS NOT NULL
+DROP PROC statspack.snap_plan_cache
+GO
+
+CREATE PROCEDURE statspack.snap_plan_cache @snapshot_id INT
+AS
+
+  INSERT INTO plan_cache(
+  snapshot_id,
+  snap_at,
+  snapshot_level ,
+  database_name ,
+  sql_handle ,
+  plan_handle ,
+  query_hash,
+  query_plan_hash,
+  statement_start_offset,
+  statement_end_offset,
+  usecounts ,
+  plan_size_in_bytes ,
+  plan_generation_num ,
+  creation_time ,
+  last_execution_time ,
+  execution_count ,
+  total_worker_time ,
+  total_logical_reads ,
+  total_physical_reads ,
+  total_logical_writes ,
+  total_elasped_time ,
+  total_rows ,
+  total_dop ,
+  total_grant_kb ,
+  total_used_grant_kb ,
+  total_ideal_grant_kb ,
+  sql_text,
+  query_plan)
+SELECT @snapshot_id, getutcdate(), 0,
+  db_name(CONVERT(INT, a.value)) as dbname, 
+q.sql_handle, q.plan_handle, 
+q.query_hash,
+q.query_plan_hash,
+q.statement_start_offset, q.statement_end_offset,
+c.usecounts, c.size_in_bytes,
+q.plan_generation_num,
+q.creation_time,
+q.last_execution_time,
+q.execution_count,
+q.total_worker_time,
+q.total_logical_reads,
+q.total_physical_reads,
+q.total_logical_writes,
+q.total_elapsed_time,
+q.total_rows,
+0,
+0,
+0,
+0,
+t.text,
+p.query_plan
+FROM sys.dm_exec_query_stats q
+JOIN sys.dm_exec_cached_plans c ON q.plan_handle = c.plan_handle
+CROSS APPLY sys.dm_exec_sql_text(q.plan_handle) AS t
+CROSS APPLY sys.dm_exec_query_plan(q.plan_handle) p
+CROSS APPLY sys.dm_exec_plan_attributes(q.plan_handle) a
+WHERE a.attribute = 'dbid'
+  AND CONVERT(INT, a.value) NOT IN (1, 2, 3, 4, 7, 8, 32767) -- tempdb, msdb, master, model, Maintenance, cpm_session
+GO
+
+IF OBJECT_ID('statspack.snap_kpi') IS NOT NULL
+DROP PROC statspack.snap_kpi;
+GO
+CREATE PROCEDURE statspack.snap_kpi @snapshot_id INT
+AS
+  
+  INSERT INTO kpi (
+    snapshot_id, snap_at,
+    database_name,
+  total_executions ,
+  responsetime_sec ,
+  total_transactions,
+  num_plans)
+ select @snapshot_id, getutcdate(),
+        db_name(CONVERT(INT, a.value)) as dbname,		
+        SUM(execution_count) as total_executions, 
+        SUM(total_elapsed_time)/1000000 as total_elapsed_time_sec,
+        (SELECT CONVERT(INT, cntr_value)
+                FROM sys.dm_os_performance_counters
+               WHERE counter_name = 'transactions/sec'
+                 AND object_name = 'SQLServer:Databases'
+                 AND instance_name = db_name(CONVERT(INT, a.value))) as tnxs,		
+        COUNT(*) as num_plans
+   from sys.dm_exec_query_stats q
+        CROSS APPLY sys.dm_exec_plan_attributes(q.plan_handle) a
+   WHERE a.attribute = 'dbid'
+     AND CONVERT(INT, a.value) NOT IN (1, 2, 3, 4, 7, 8, 32767)
+   group by a.value;
+GO
+
+IF OBJECT_ID('statspack.snap_all') IS NOT NULL   
+DROP PROC statspack.snap_all
+GO
+CREATE PROCEDURE statspack.snap_all
+AS
+  DECLARE @snapshot_id int;
+  
+  INSERT INTO snapshots(starttime, is_adhoc_snapshot) VALUES(getutcdate(), 0);
+  SET @snapshot_id = @@identity;
+  
+  DECLARE job_cursor CURSOR FOR
+  SELECT jobname, interval, last_run_at FROM job_schedules 
+  WHERE is_enabled = 1
+  ORDER BY run_order;
+  
+  OPEN job_cursor;
+  
+  DECLARE @job_name nvarchar(30);
+  DECLARE @job_interval int;
+  DECLARE @last_run_at DATETIME;
+  
+  DECLARE @sqlstmt nvarchar(1000);
+  
+  FETCH NEXT FROM job_cursor INTO @job_name, @job_interval, @last_run_at;
+  
+  WHILE @@FETCH_STATUS = 0
+  BEGIN
+    IF DATEDIFF(minute, @last_run_at, getutcdate()) > @job_interval - 1 
+	BEGIN
+	  SET @sqlstmt = 'exec statspack.' + @job_name + ' @p0'
+	  --PRINT @sqlstmt
+	  EXEC sp_executesql @sqlstmt, N'@p0 INT', @p0 = @snapshot_id
+	  UPDATE job_schedules
+	     SET last_run_at = getutcdate(), last_snapshot_id = @snapshot_id
+	   WHERE jobname = @job_name;
+	END
+	 
+	FETCH NEXT FROM job_cursor INTO @job_name, @job_interval, @last_run_at;
+  END
+  
+  UPDATE snapshots
+     SET endtime = getutcdate()
+   WHERE id = @snapshot_id;
+
+  CLOSE job_cursor
+  DEALLOCATE job_cursor
+GO
+
+IF OBJECT_ID('statspack.snap_all_adhoc') IS NOT NULL
+DROP PROC  statspack.snap_all_adhoc;
+GO 
+CREATE PROCEDURE statspack.snap_all_adhoc
+AS
+  DECLARE @snapshot_id int;
+  
+  INSERT INTO snapshots(starttime, is_adhoc_snapshot) VALUES(getutcdate(), 1);
+  SET @snapshot_id = @@identity;
+  
+  DECLARE job_cursor CURSOR FOR
+  SELECT jobname, interval, last_run_at FROM job_schedules 
+  WHERE is_enabled = 1 AND in_adhoc = 1
+  ORDER BY run_order;
+  
+  OPEN job_cursor;
+  
+  DECLARE @job_name nvarchar(30);
+  DECLARE @job_interval int;
+  DECLARE @last_run_at DATETIME;
+  
+  DECLARE @sqlstmt nvarchar(1000);
+  
+  FETCH NEXT FROM job_cursor INTO @job_name, @job_interval, @last_run_at;
+  
+  WHILE @@FETCH_STATUS = 0
+  BEGIN
+	SET @sqlstmt = 'exec statspack.' + @job_name + ' @p0'
+	--PRINT @sqlstmt
+	EXEC sp_executesql @sqlstmt, N'@p0 INT', @p0 = @snapshot_id
+	UPDATE job_schedules
+	   SET last_run_at = getutcdate(), last_snapshot_id = @snapshot_id
+	 WHERE jobname = @job_name;
+	 
+	FETCH NEXT FROM job_cursor INTO @job_name, @job_interval, @last_run_at;
+  END
+  
+  UPDATE snapshots
+     SET endtime = getutcdate()
+   WHERE id = @snapshot_id;
+
+  CLOSE job_cursor
+  DEALLOCATE job_cursor
+GO
+
+IF OBJECT_ID('statspack.snap_waits') IS NOT NULL
+DROP PROC statspack.snap_waits
+GO  
+CREATE PROCEDURE statspack.snap_waits @snapshot_id INT
+AS  
+  INSERT INTO wait_stats (
+    snapshot_id,
+	snap_at,
+	wait_type,
+	waiting_tasks_count,
+	wait_time_ms,
+	max_wait_time_ms,
+	signal_wait_time_ms
+  )
+  SELECT  @snapshot_id, getutcdate(),
+    wait_type,
+	waiting_tasks_count,
+	wait_time_ms,
+	max_wait_time_ms,
+	signal_wait_time_ms
+  FROM sys.dm_os_wait_stats
+WHERE waiting_tasks_count > 0
+  AND wait_type NOT IN (
+        N'BROKER_EVENTHANDLER',             N'BROKER_RECEIVE_WAITFOR',
+        N'BROKER_TASK_STOP',                N'BROKER_TO_FLUSH',
+        N'BROKER_TRANSMITTER',              N'CHECKPOINT_QUEUE',
+        N'CHKPT',                           N'CLR_AUTO_EVENT',
+        N'CLR_MANUAL_EVENT',                N'CLR_SEMAPHORE',
+        N'DBMIRROR_DBM_EVENT',              N'DBMIRROR_EVENTS_QUEUE',
+        N'DBMIRROR_WORKER_QUEUE',           N'DBMIRRORING_CMD',
+        N'DIRTY_PAGE_POLL',                 N'DISPATCHER_QUEUE_SEMAPHORE',
+        N'EXECSYNC',                        N'FSAGENT',
+        N'FT_IFTS_SCHEDULER_IDLE_WAIT',     N'FT_IFTSHC_MUTEX',
+        N'HADR_CLUSAPI_CALL',               N'HADR_FILESTREAM_IOMGR_IOCOMPLETION',
+        N'HADR_LOGCAPTURE_WAIT',            N'HADR_NOTIFICATION_DEQUEUE',
+        N'HADR_TIMER_TASK',                 N'HADR_WORK_QUEUE',
+        N'KSOURCE_WAKEUP',                  N'LAZYWRITER_SLEEP',
+        N'LOGMGR_QUEUE',                    N'ONDEMAND_TASK_QUEUE',
+        N'PWAIT_ALL_COMPONENTS_INITIALIZED',
+        N'QDS_PERSIST_TASK_MAIN_LOOP_SLEEP',
+        N'QDS_CLEANUP_STALE_QUERIES_TASK_MAIN_LOOP_SLEEP',
+        N'REQUEST_FOR_DEADLOCK_SEARCH',     N'RESOURCE_QUEUE',
+        N'SERVER_IDLE_CHECK',               N'SLEEP_BPOOL_FLUSH',
+        N'SLEEP_DBSTARTUP',                 N'SLEEP_DCOMSTARTUP',
+        N'SLEEP_MASTERDBREADY',             N'SLEEP_MASTERMDREADY',
+        N'SLEEP_MASTERUPGRADED',            N'SLEEP_MSDBSTARTUP',
+        N'SLEEP_SYSTEMTASK',                N'SLEEP_TASK',
+        N'SLEEP_TEMPDBSTARTUP',             N'SNI_HTTP_ACCEPT',
+        N'SP_SERVER_DIAGNOSTICS_SLEEP',     N'SQLTRACE_BUFFER_FLUSH',
+        N'SQLTRACE_INCREMENTAL_FLUSH_SLEEP',
+        N'SQLTRACE_WAIT_ENTRIES',           N'WAIT_FOR_RESULTS',
+        N'WAITFOR',                         N'WAITFOR_TASKSHUTDOWN',
+        N'WAIT_XTP_HOST_WAIT',              N'WAIT_XTP_OFFLINE_CKPT_NEW_LOG',
+        N'WAIT_XTP_CKPT_CLOSE',             N'XE_DISPATCHER_JOIN',
+        N'XE_DISPATCHER_WAIT',              N'XE_TIMER_EVENT')
+GO  
+
+IF OBJECT_ID('statspack.snap_io_stats') IS NOT NULL
+DROP PROCEDURE [statspack].[snap_io_stats]
+GO
+
+CREATE PROCEDURE statspack.snap_io_stats @snapshot_id INT
+AS
+INSERT INTO statspack.io_stats 
+(   [snapshot_id],
+	[snap_at],
+	[ReadLatency],
+	[WriteLatency],
+	[Latency],
+	[AvgBPerRead],
+	[AvgBPerWrite],
+	[AvgBPerTransfer],
+	[Drive],
+	[DB],
+	[database_id],
+	[file_id],
+	[sample_ms],
+	[num_of_reads],
+	[num_of_bytes_read],
+	[io_stall_read_ms],
+	[num_of_writes],
+	[num_of_bytes_written],
+	[io_stall_write_ms],
+	[io_stall],
+	[size_on_disk_MB],
+	[file_handle],
+	[physical_name]
+)
+SELECT 
+    --virtual file latency
+	@snapshot_id,
+	getutcdate(),
+	CASE 
+		WHEN [num_of_reads] = 0 
+			THEN 0 
+		ELSE ([io_stall_read_ms]/[num_of_reads]) 
+	END [ReadLatency],
+	CASE 
+		WHEN [io_stall_write_ms] = 0 
+			THEN 0 
+		ELSE ([io_stall_write_ms]/[num_of_writes]) 
+	END [WriteLatency],
+	CASE 
+		WHEN ([num_of_reads] = 0 AND [num_of_writes] = 0)
+             THEN 0 
+		ELSE ([io_stall]/([num_of_reads] + [num_of_writes])) 
+	END [Latency],
+	--avg bytes per IOP
+	CASE 
+		WHEN [num_of_reads] = 0 
+			THEN 0 
+		ELSE ([num_of_bytes_read]/[num_of_reads]) 
+	END [AvgBPerRead],
+	CASE 
+		WHEN [io_stall_write_ms] = 0 
+			THEN 0 
+		ELSE ([num_of_bytes_written]/[num_of_writes]) 
+	END [AvgBPerWrite],
+	CASE 
+		WHEN ([num_of_reads] = 0 AND [num_of_writes] = 0)
+			THEN 0 
+		ELSE (([num_of_bytes_read] + [num_of_bytes_written])/([num_of_reads] + [num_of_writes])) 
+	END [AvgBPerTransfer],
+	LEFT([mf].[physical_name],2) [Drive],
+	DB_NAME([vfs].[database_id]) [DB],
+	[vfs].[database_id],
+	[vfs].[file_id],
+	[vfs].[sample_ms],
+	[vfs].[num_of_reads],
+	[vfs].[num_of_bytes_read],
+	[vfs].[io_stall_read_ms],
+	[vfs].[num_of_writes],
+	[vfs].[num_of_bytes_written],
+	[vfs].[io_stall_write_ms],
+	[vfs].[io_stall],
+	[vfs].[size_on_disk_bytes]/1024/1024. [size_on_disk_MB],
+	[vfs].[file_handle],
+	[mf].[physical_name]
+FROM [sys].[dm_io_virtual_file_stats](NULL,NULL) AS vfs
+JOIN [sys].[master_files] [mf] 
+    ON [vfs].[database_id] = [mf].[database_id] 
+    AND [vfs].[file_id] = [mf].[file_id]
+GO  
+  
+
+/*
+ * index usage stats
+ */
+IF OBJECT_ID('statspack.snap_index_usage') IS NOT NULL
+DROP TABLE statspack.index_usage;
+GO
+CREATE TABLE statspack.index_usage (
+  id bigint identity(1, 1) NOT NULL,
+  snapshot_id int NOT NULL,
+  snap_at DATETIME,
+  table_name varchar(200),
+  index_name varchar(200),
+  user_seeks bigint,
+  user_scans bigint,
+  user_lookups bigint,
+  user_updates bigint,
+  [rows] bigint
+)
+GO
+
+INSERT INTO statspack.job_schedules(jobname, interval, last_run_at, run_order, last_snapshot_id, is_enabled, in_adhoc) 
+    VALUES('snap_index_usage', 1440, NULL, 50, 100, 1, 0); -- 24 hours
+GO
+
+CREATE PROCEDURE statspack.snap_index_usage @snapshot_id INT
+AS
+  INSERT INTO statspack.index_usage (
+	snapshot_id,
+	snap_at,
+	table_name,
+	index_name,
+	user_seeks,
+	user_scans,
+	user_lookups,
+	user_updates,
+	[rows]
+	)
+SELECT  @snapshot_id
+		,getutcdate()
+		,'[' + DB_NAME() + '].[' + su.[name] + '].[' + o.[name] + ']'
+            AS [statement] ,
+        i.[name] AS [index_name] ,
+        ddius.[user_seeks],
+		ddius.[user_scans],
+		ddius.[user_lookups],
+        ddius.[user_updates],
+        SP.rows
+FROM    sys.dm_db_index_usage_stats ddius
+        INNER JOIN sys.indexes i ON ddius.[object_id] = i.[object_id]
+                                     AND i.[index_id] = ddius.[index_id]
+        INNER JOIN sys.partitions SP ON ddius.[object_id] = SP.[object_id]
+                                        AND SP.[index_id] = ddius.[index_id]
+        INNER JOIN sys.objects o ON ddius.[object_id] = o.[object_id]
+        INNER JOIN sys.sysusers su ON o.[schema_id] = su.[UID]
+WHERE   ddius.[database_id] = DB_ID() -- current database only
+        AND OBJECTPROPERTY(ddius.[object_id], 'IsUserTable') = 1
+        AND ddius.[index_id] > 0
+GO
+
+IF OBJECT_ID('statspack.cpu_usage') IS NOT NULL
+DROP TABLE statspack.cpu_usage
+GO
+CREATE TABLE statspack.cpu_usage (
+  id bigint identity(1, 1) NOT NULL,
+  snapshot_id int NOT NULL,
+  snap_at DATETIME,
+  event_time DATETIME,
+  SQLServerProcessUtilization FLOAT,
+  OtherProcessUtilization FLOAT
+)
+GO
+
+CREATE PROCEDURE statspack.snap_cpu_utilization @snapshot_id INT
+AS
+  DECLARE @ts_now bigint = (SELECT cpu_ticks/(cpu_ticks/ms_ticks)FROM sys.dm_os_sys_info); 
+
+  INSERT INTO statspack.cpu_usage (
+	snapshot_id,
+	snap_at,
+	event_time,
+	SQLServerProcessUtilization,
+	OtherProcessUtilization
+	)
+    SELECT TOP(30) 
+		@snapshot_id
+		,getutcdate()
+		,DATEADD(ms, -1 * (@ts_now - [timestamp]), GETDATE())
+		,SQLProcessUtilization AS [SQL Server Process CPU Utilization], 
+        ,100 - SystemIdle - SQLProcessUtilization AS [Other Process CPU Utilization]
+    FROM ( 
+          SELECT record.value('(./Record/@id)[1]', 'int') AS record_id, 
+                record.value('(./Record/SchedulerMonitorEvent/SystemHealth/SystemIdle)[1]', 'int') 
+                AS [SystemIdle], 
+                record.value('(./Record/SchedulerMonitorEvent/SystemHealth/ProcessUtilization)[1]', 
+                'int') 
+                AS [SQLProcessUtilization], [timestamp] 
+          FROM ( 
+                SELECT [timestamp], convert(xml, record) AS [record] 
+                FROM sys.dm_os_ring_buffers 
+                WHERE ring_buffer_type = N'RING_BUFFER_SCHEDULER_MONITOR' 
+                AND record LIKE '%<SystemHealth>%') AS x 
+          ) AS y 
+    ORDER BY record_id DESC;
+GO
+
+INSERT INTO statspack.job_schedules(jobname, interval, last_run_at, run_order, last_snapshot_id, is_enabled, in_adhoc) 
+VALUES('snap_cpu_utilization', 30, NULL, 15, 100, 1, 1); -- 30 minute interval
+
+
+IF OBJECT_ID('statspack.ex_event_stats') IS NOT NULL
+DROP TABLE statspack.ex_event_stats
+GO
+CREATE TABLE statspack.ex_event_stats (
+  id bigint identity(1, 1) NOT NULL,
+  snapshot_id int NOT NULL,
+  snap_at DATETIME,
+  event_name VARCHAR(100),
+  total_count bigint
+)
+GO
+
+CREATE PROCEDURE statspack.snap_ex_event_stats @snapshot_id INT
+AS
+
+  INSERT INTO statspack.ex_event_stats (
+	snapshot_id,
+	snap_at,
+	event_name,
+    total_count
+	)
+    SELECT @snapshot_id
+		,getutcdate()
+		,n.value('@name', 'varchar(30)') AS event_name
+		,n.value('@count[1]', 'int') as total_count
+		FROM
+		(	
+		SELECT s.name, CAST(target_data AS XML) as target_data
+		FROM sys.dm_xe_sessions AS s 
+		JOIN sys.dm_xe_session_targets AS t 
+			ON t.event_session_address = s.address
+		WHERE s.name IN ('XE_Count_rpc_completed')
+		AND t.target_name = 'event_counter'
+		) as tab
+		CROSS APPLY target_data.nodes('CounterTarget/Packages/Package/Event') as q(n)
+GO
+
+INSERT INTO statspack.job_schedules(jobname, interval, last_run_at, run_order, last_snapshot_id, is_enabled, in_adhoc) 
+VALUES('snap_ex_event_stats', 5, NULL, 17, 100, 1, 1); -- 30 minute interval
+
+
+IF OBJECT_ID('statspack.index_usage_stats') IS NOT NULL
+DROP TABLE statspack.index_usage_stats
+GO
+CREATE TABLE statspack.index_usage_stats (
+  id bigint identity(1, 1) NOT NULL,
+  snapshot_id int NOT NULL,
+  snap_at DATETIME,
+  database_name VARCHAR(100),
+  schema_name VARCHAR(100),
+  table_name VARCHAR(100),
+  index_name VARCHAR(100),
+  user_seek bigint,
+  user_scan bigint,
+  user_loopup bigint,
+  user_updates bigint
+)
+GO
+
+CREATE PROCEDURE [statspack].[snap_index_usage] @snapshot_id INT
+AS
+DECLARE @sql NVARCHAR(4000)
+DECLARE @db_name NVARCHAR(100)
+
+DECLARE db_cursor CURSOR FOR
+  SELECT name FROM master.dbo.sysdatabases WHERE dbid > 4 
+OPEN db_cursor
+FETCH NEXT FROM db_cursor INTO @db_name;
+  
+WHILE @@FETCH_STATUS = 0
+BEGIN
+
+  SET @sql = 'USE [' + @db_name + '] 
+
+  INSERT INTO Maintenance.statspack.index_usage_stats (
+	snapshot_id,
+  snap_at ,
+  database_name ,
+  schema_name ,
+  table_name ,
+  index_name ,
+  user_seek ,
+  user_scan ,
+  user_loopup ,
+  user_updates ,
+  [rows]
+	)
+SELECT @p0
+        ,getutcdate()
+		,DB_NAME() 
+		,su.[name]
+		,o.[name] 
+        ,i.[name] AS [index_name]
+        ,ddius.[user_seeks]
+		,ddius.[user_scans]
+		,ddius.[user_lookups]
+        ,ddius.[user_updates]
+        ,SP.rows
+FROM    sys.dm_db_index_usage_stats ddius
+        INNER JOIN sys.indexes i ON ddius.[object_id] = i.[object_id]
+                                     AND i.[index_id] = ddius.[index_id]
+        INNER JOIN sys.partitions SP ON ddius.[object_id] = SP.[object_id]
+                                        AND SP.[index_id] = ddius.[index_id]
+        INNER JOIN sys.objects o ON ddius.[object_id] = o.[object_id]
+        INNER JOIN sys.sysusers su ON o.[schema_id] = su.[UID]
+WHERE   OBJECTPROPERTY(ddius.[object_id], ''IsUserTable'') = 1
+        AND ddius.[index_id] > 0
+		AND sp.rows > 1000'
+
+  exec sp_executesql @sql, N'@p0 INT', @p0=@snapshot_id
+
+  FETCH NEXT FROM db_cursor INTO @db_name;
+END
+
+  CLOSE db_cursor
+  DEALLOCATE db_cursor
+GO
+
+
+  
+  
+  
+  
+  
+  
+
+
+  
+  
+  
+  
+  
